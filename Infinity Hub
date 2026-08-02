@@ -1,0 +1,571 @@
+-- =================================================================
+-- Infinity Hub - Part 1: Core System & Logic Engine
+-- =================================================================
+
+local Services = {
+    Players = game:GetService("Players"),
+    RunService = game:GetService("RunService"),
+    UserInputService = game:GetService("UserInputService"),
+    CoreGui = game:GetService("CoreGui")
+}
+
+local LocalPlayer = Services.Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local NewTitle = "Infinity Hub"
+
+-- โหลด UI Library หลัก
+local LibraryUrl = "https://raw.githubusercontent.com/qqe22462-ops/PISIT-X-TATA/refs/heads/main/PISIT_HUB.bundle.lua"
+local Success, UI = pcall(function()
+    return loadstring(game:HttpGet(LibraryUrl))()
+end)
+
+if not Success or not UI then
+    warn("[Infinity Hub] ไม่สามารถโหลด UI Library ได้")
+    return
+end
+
+-- =================================================================
+-- ระบบบังคับเปลี่ยนชื่อข้อความบน GUI เป็น Infinity Hub
+-- =================================================================
+local function UpdateGUIText()
+    local targets = {Services.CoreGui, LocalPlayer:FindFirstChild("PlayerGui")}
+    for _, target in ipairs(targets) do
+        if target then
+            for _, v in ipairs(target:GetDescendants()) do
+                if v:IsA("TextLabel") or v:IsA("TextButton") then
+                    if v.Text:find("PISIT") or v.Text:find("PISIT HUB") then
+                        v.Text = v.Text:gsub("PISIT HUB", NewTitle):gsub("PISIT", "Infinity")
+                    end
+                end
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    for i = 1, 20 do
+        UpdateGUIText()
+        task.wait(0.2)
+    end
+end)
+
+Services.CoreGui.DescendantAdded:Connect(function()
+    task.wait(0.05)
+    UpdateGUIText()
+end)
+
+-- =================================================================
+-- 1. ระบบ วง FOV RGB (Drawing API)
+-- =================================================================
+local FOV_Enabled = false
+local FOV_Radius = 150
+local Hue = 0
+
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 2
+FOVCircle.NumSides = 60
+FOVCircle.Filled = false
+FOVCircle.Transparency = 1
+FOVCircle.Visible = false
+
+Services.RunService.RenderStepped:Connect(function(deltaTime)
+    if FOV_Enabled then
+        local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        FOVCircle.Position = center
+        FOVCircle.Radius = FOV_Radius
+        
+        Hue = (Hue + deltaTime * 0.4) % 1
+        FOVCircle.Color = Color3.fromHSV(Hue, 1, 1)
+        FOVCircle.Visible = true
+    else
+        FOVCircle.Visible = false
+    end
+end)
+
+-- =================================================================
+-- 2. ระบบค้นหาผู้เล่นที่ใกล้จุดศูนย์กลางวง FOV ที่สุด
+-- =================================================================
+local SilentAim_Enabled = false
+
+local function GetClosestPlayerInFOV()
+    if not SilentAim_Enabled then return nil end
+    
+    local closestPlayer = nil
+    local shortestDistance = FOV_Radius
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, player in ipairs(Services.Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") and player.Character:FindFirstChildOfClass("Humanoid") and player.Character.Humanoid.Health > 0 then
+            local head = player.Character.Head
+            local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
+            
+            if onScreen then
+                local dist = (Vector2.new(pos.X, pos.Y) - screenCenter).Magnitude
+                if dist <= shortestDistance then
+                    shortestDistance = dist
+                    closestPlayer = player
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+-- =================================================================
+-- 3. ระบบ ยิงอากาศโดนหัว + ยิงทะลุ (Silent Aim & Wallbang)
+-- =================================================================
+pcall(function()
+    local mt = getrawmetatable(game)
+    local oldNamecall = mt.__namecall
+    local oldIndex = mt.__index
+    setreadonly(mt, false)
+
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+
+        if SilentAim_Enabled then
+            local target = GetClosestPlayerInFOV()
+            if target and target.Character and target.Character:FindFirstChild("Head") then
+                local headPos = target.Character.Head.Position
+
+                if method == "Raycast" then
+                    if args[1] then
+                        args[2] = (headPos - args[1]).Unit * 10000
+                        if args[3] and typeof(args[3]) == "RaycastParams" then
+                            args[3].FilterType = Enum.RaycastFilterType.Exclude
+                            args[3].IgnoreWater = true
+                        end
+                    end
+                    return oldNamecall(self, unpack(args))
+                elseif method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRay" then
+                    if args[1] then
+                        local origin = args[1].Origin
+                        args[1] = Ray.new(origin, (headPos - origin).Unit * 10000)
+                    end
+                    return oldNamecall(self, unpack(args))
+                end
+            end
+        end
+
+        return oldNamecall(self, ...)
+    end)
+
+    mt.__index = newcclosure(function(self, idx)
+        if SilentAim_Enabled and not checkcaller() then
+            if tostring(self) == "Mouse" or (typeof(self) == "Instance" and self:IsA("Mouse")) then
+                local target = GetClosestPlayerInFOV()
+                if target and target.Character and target.Character:FindFirstChild("Head") then
+                    if idx == "Hit" then
+                        return target.Character.Head.CFrame
+                    elseif idx == "Target" then
+                        return target.Character.Head
+                    end
+                end
+            end
+        end
+        return oldIndex(self, idx)
+    end)
+
+    setreadonly(mt, true)
+end)
+
+-- =================================================================
+-- 4. ระบบ ESP 2D Box สีดำ (Drawing API)
+-- =================================================================
+local ESP_Enabled = false
+local ESP_Boxes = {}
+
+local function CreateESPBox(player)
+    if player == LocalPlayer then return end
+    
+    local box = Drawing.new("Square")
+    box.Color = Color3.fromRGB(0, 0, 0)
+    box.Thickness = 2
+    box.Filled = false
+    box.Transparency = 1
+    box.Visible = false
+    
+    ESP_Boxes[player] = box
+end
+
+local function RemoveESPBox(player)
+    if ESP_Boxes[player] then
+        ESP_Boxes[player]:Remove()
+        ESP_Boxes[player] = nil
+    end
+end
+
+for _, player in ipairs(Services.Players:GetPlayers()) do
+    CreateESPBox(player)
+end
+
+Services.Players.PlayerAdded:Connect(CreateESPBox)
+Services.Players.PlayerRemoving:Connect(RemoveESPBox)
+
+Services.RunService.RenderStepped:Connect(function()
+    for player, box in pairs(ESP_Boxes) do
+        if ESP_Enabled and player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChildOfClass("Humanoid") and player.Character.Humanoid.Health > 0 then
+            local hrp = player.Character.HumanoidRootPart
+            local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+            
+            if onScreen then
+                local head = player.Character:FindFirstChild("Head")
+                local headPos = head and head.Position or (hrp.Position + Vector3.new(0, 3, 0))
+                local legsPos = hrp.Position - Vector3.new(0, 3, 0)
+                
+                local headScreen = Camera:WorldToViewportPoint(headPos + Vector3.new(0, 0.5, 0))
+                local legsScreen = Camera:WorldToViewportPoint(legsPos)
+                
+                local height = math.abs(headScreen.Y - legsScreen.Y)
+                local width = height * 0.65
+                
+                box.Size = Vector2.new(width, height)
+                box.Position = Vector2.new(pos.X - (width / 2), pos.Y - (height / 2))
+                box.Visible = true
+            else
+                box.Visible = false
+            end
+        else
+            box.Visible = false
+        end
+    end
+end)
+
+-- =================================================================
+-- 5. ระบบ WalkSpeed (ปรับความเร็ววิ่ง)
+-- =================================================================
+local Speed_Enabled = false
+local Speed_Value = 16
+
+Services.RunService.RenderStepped:Connect(function()
+    if Speed_Enabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+        LocalPlayer.Character:FindFirstChildOfClass("Humanoid").WalkSpeed = Speed_Value
+    end
+end)
+
+-- =================================================================
+-- 6. ระบบ Infinite Stamina (สเตมมิน่าไม่จำกัด)
+-- =================================================================
+local InfiniteStamina_Enabled = false
+
+Services.RunService.RenderStepped:Connect(function()
+    if InfiniteStamina_Enabled then
+        if LocalPlayer.Character then
+            for _, v in ipairs(LocalPlayer.Character:GetDescendants()) do
+                if v:IsA("NumberValue") or v:IsA("IntValue") then
+                    local name = v.Name:lower()
+                    if name:find("stamina") or name:find("energy") or name:find("sprint") then
+                        v.Value = 100
+                    end
+                end
+            end
+            for attr, _ in pairs(LocalPlayer.Character:GetAttributes()) do
+                if attr:lower():find("stamina") or attr:lower():find("energy") or attr:lower():find("sprint") then
+                    LocalPlayer.Character:SetAttribute(attr, 100)
+                end
+            end
+        end
+        for _, v in ipairs(LocalPlayer:GetDescendants()) do
+            if v:IsA("NumberValue") or v:IsA("IntValue") then
+                local name = v.Name:lower()
+                if name:find("stamina") or name:find("energy") or name:find("sprint") then
+                    v.Value = 100
+                end
+            end
+        end
+    end
+end)
+
+-- =================================================================
+-- 7. ระบบ Teleport ไปหาผู้เล่นอื่น
+-- =================================================================
+local TargetPlayerName = ""
+
+local function TeleportToPlayer(targetName)
+    if targetName == "" then return end
+    
+    targetName = targetName:lower()
+    for _, player in ipairs(Services.Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local nameMatch = player.Name:lower():sub(1, #targetName) == targetName
+            local displayMatch = player.DisplayName:lower():sub(1, #targetName) == targetName
+            
+            if nameMatch or displayMatch then
+                if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                    LocalPlayer.Character.HumanoidRootPart.CFrame = player.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- =================================================================
+-- 8. ระบบขยาย Hitbox หัว (Head Hitbox Expander)
+-- =================================================================
+local Hitbox_Enabled = false
+local Hitbox_Size = 10
+local Original_Head_Sizes = {}
+
+local function UpdateHitboxes()
+    for _, player in ipairs(Services.Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") then
+            local head = player.Character.Head
+            
+            if not Original_Head_Sizes[player] then
+                Original_Head_Sizes[player] = head.Size
+            end
+
+            if Hitbox_Enabled then
+                head.Size = Vector3.new(Hitbox_Size, Hitbox_Size, Hitbox_Size)
+                head.Transparency = 0.5
+                head.CanCollide = false
+            else
+                if Original_Head_Sizes[player] then
+                    head.Size = Original_Head_Sizes[player]
+                    head.Transparency = 0
+                    head.CanCollide = true
+                end
+            end
+        end
+    end
+end
+
+Services.RunService.RenderStepped:Connect(function()
+    if Hitbox_Enabled then
+        UpdateHitboxes()
+    end
+end)
+
+-- =================================================================
+-- 9. ระบบโหลดสคริปต์จาก Pastefy Links
+-- =================================================================
+local Script1_Url = "https://pastefy.app/AkB799ih/raw"
+local Script2_Url = "https://pastefy.app/xG5IUFEl/raw"
+
+local function LoadExternalScript(url, scriptName)
+    local success, err = pcall(function()
+        loadstring(game:HttpGet(url))()
+    end)
+    if success then
+        print("[Infinity Hub] โหลด " .. scriptName .. " สำเร็จ!")
+    else
+        warn("[Infinity Hub] เกิดข้อผิดพลาดในการโหลด " .. scriptName .. ": " .. tostring(err))
+    end
+end
+
+
+-- =================================================================
+-- Infinity Hub - Part 2: UI Interface & Controls
+-- =================================================================
+
+-- สร้างหน้าต่าง UI หลัก
+local Window
+if type(UI.CreateWindow) == "function" then
+    Window = UI:CreateWindow({
+        Name = NewTitle,
+        LoadingTitle = NewTitle,
+        LoadingSubtitle = "Loaded Successfully"
+    })
+elseif type(UI.Init) == "function" then
+    Window = UI:Init({ Name = NewTitle })
+else
+    Window = UI
+end
+
+-- สร้าง Tab หลัก (Main Hacks)
+local MainTab
+if Window.CreateTab then
+    MainTab = Window:CreateTab("Main Hacks")
+elseif Window.AddTab then
+    MainTab = Window:AddTab("Main Hacks")
+elseif Window.MakeTab then
+    MainTab = Window:MakeTab({Name = "Main Hacks"})
+else
+    MainTab = Window
+end
+
+-- สร้าง Tab สำหรับ Combat (Hitbox & Silent Aim)
+local CombatTab
+if Window.CreateTab then
+    CombatTab = Window:CreateTab("Combat & FOV")
+elseif Window.AddTab then
+    CombatTab = Window:AddTab("Combat & FOV")
+elseif Window.MakeTab then
+    CombatTab = Window:MakeTab({Name = "Combat & FOV"})
+else
+    CombatTab = MainTab
+end
+
+-- สร้าง Tab สำหรับสคริปต์ Pastefy (Custom Scripts)
+local ExtraTab
+if Window.CreateTab then
+    ExtraTab = Window:CreateTab("Custom Scripts")
+elseif Window.AddTab then
+    ExtraTab = Window:AddTab("Custom Scripts")
+elseif Window.MakeTab then
+    ExtraTab = Window:MakeTab({Name = "Custom Scripts"})
+else
+    ExtraTab = MainTab
+end
+
+-- -----------------------------------------------------------------
+-- Main Hacks Tab Elements
+-- -----------------------------------------------------------------
+-- [1] ESP Section
+if MainTab.CreateToggle then
+    MainTab:CreateToggle({
+        Name = "ESP 2D Box (สีดำ)",
+        CurrentValue = false,
+        Callback = function(Value) ESP_Enabled = Value end
+    })
+elseif MainTab.AddToggle then
+    MainTab:AddToggle("ESP 2D Box (สีดำ)", false, function(Value) ESP_Enabled = Value end)
+end
+
+-- [2] WalkSpeed Section
+if MainTab.CreateToggle then
+    MainTab:CreateToggle({
+        Name = "เปิดใช้งาน ความเร็ววิ่ง (WalkSpeed)",
+        CurrentValue = false,
+        Callback = function(Value)
+            Speed_Enabled = Value
+            if not Value and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+                LocalPlayer.Character:FindFirstChildOfClass("Humanoid").WalkSpeed = 16
+            end
+        end
+    })
+end
+
+if MainTab.CreateSlider then
+    MainTab:CreateSlider({
+        Name = "ความเร็ววิ่ง (WalkSpeed)",
+        Range = {16, 200},
+        Increment = 1,
+        CurrentValue = 16,
+        Callback = function(Value) Speed_Value = Value end
+    })
+elseif MainTab.AddSlider then
+    MainTab:AddSlider("ความเร็ววิ่ง (WalkSpeed)", 16, 200, 16, function(Value) Speed_Value = Value end)
+end
+
+-- [3] Infinite Stamina Section
+if MainTab.CreateToggle then
+    MainTab:CreateToggle({
+        Name = "สเตมมิน่าไม่จำกัด (Infinite Stamina)",
+        CurrentValue = false,
+        Callback = function(Value) InfiniteStamina_Enabled = Value end
+    })
+elseif MainTab.AddToggle then
+    MainTab:AddToggle("สเตมมิน่าไม่จำกัด (Infinite Stamina)", false, function(Value) InfiniteStamina_Enabled = Value end)
+end
+
+-- [4] Teleport Section
+if MainTab.CreateInput or MainTab.CreateTextbox then
+    local InputFunc = MainTab.CreateInput or MainTab.CreateTextbox
+    InputFunc(MainTab, {
+        Name = "ชื่อผู้เล่นที่จะวาร์ปไปหา",
+        PlaceholderText = "พิมพ์ชื่อ หรือ ชื่อย่อ...",
+        RemoveTextAfterFocusLost = false,
+        Callback = function(Text) TargetPlayerName = Text end
+    })
+end
+
+if MainTab.CreateButton then
+    MainTab:CreateButton({
+        Name = "Teleport ไปหาผู้เล่น",
+        Callback = function() TeleportToPlayer(TargetPlayerName) end
+    })
+elseif MainTab.AddButton then
+    MainTab:AddButton("Teleport ไปหาผู้เล่น", function() TeleportToPlayer(TargetPlayerName) end)
+end
+
+-- -----------------------------------------------------------------
+-- Combat & FOV Tab Elements
+-- -----------------------------------------------------------------
+-- [5] FOV Circle Section
+if CombatTab.CreateToggle then
+    CombatTab:CreateToggle({
+        Name = "เปิดใช้งาน วง FOV (RGB กลางจอ)",
+        CurrentValue = false,
+        Callback = function(Value) FOV_Enabled = Value end
+    })
+elseif CombatTab.AddToggle then
+    CombatTab:AddToggle("เปิดใช้งาน วง FOV (RGB กลางจอ)", false, function(Value) FOV_Enabled = Value end)
+end
+
+if CombatTab.CreateSlider then
+    CombatTab:CreateSlider({
+        Name = "รัศมีวง FOV",
+        Range = {30, 500},
+        Increment = 5,
+        CurrentValue = 150,
+        Callback = function(Value) FOV_Radius = Value end
+    })
+elseif CombatTab.AddSlider then
+    CombatTab:AddSlider("รัศมีวง FOV", 30, 500, 150, function(Value) FOV_Radius = Value end)
+end
+
+-- [6] Silent Aim Head & Wallbang Section
+if CombatTab.CreateToggle then
+    CombatTab:CreateToggle({
+        Name = "ยิงอากาศโดนหัว + ยิงทะลุ (เฉพาะในวง FOV)",
+        CurrentValue = false,
+        Callback = function(Value) SilentAim_Enabled = Value end
+    })
+elseif CombatTab.AddToggle then
+    CombatTab:AddToggle("ยิงอากาศโดนหัว + ยิงทะลุ (เฉพาะในวง FOV)", false, function(Value) SilentAim_Enabled = Value end)
+end
+
+-- [7] Hitbox Expander Section
+if CombatTab.CreateToggle then
+    CombatTab:CreateToggle({
+        Name = "เปิดใช้งาน ขยาย Hitbox หัว",
+        CurrentValue = false,
+        Callback = function(Value)
+            Hitbox_Enabled = Value
+            UpdateHitboxes()
+        end
+    })
+elseif CombatTab.AddToggle then
+    CombatTab:AddToggle("เปิดใช้งาน ขยาย Hitbox หัว", false, function(Value)
+        Hitbox_Enabled = Value
+        UpdateHitboxes()
+    end)
+end
+
+if CombatTab.CreateSlider then
+    CombatTab:CreateSlider({
+        Name = "ขนาด Hitbox หัว",
+        Range = {1, 30},
+        Increment = 1,
+        CurrentValue = 10,
+        Callback = function(Value) Hitbox_Size = Value end
+    })
+elseif CombatTab.AddSlider then
+    CombatTab:AddSlider("ขนาด Hitbox หัว", 1, 30, 10, function(Value) Hitbox_Size = Value end)
+end
+
+-- -----------------------------------------------------------------
+-- Custom Scripts Tab Elements
+-- -----------------------------------------------------------------
+-- [8] Pastefy Links Section
+if ExtraTab.CreateButton then
+    ExtraTab:CreateButton({
+        Name = "รันสคริปต์ที่ 1 (Pastefy AkB799ih)",
+        Callback = function() LoadExternalScript(Script1_Url, "Script 1") end
+    })
+    
+    ExtraTab:CreateButton({
+        Name = "รันสคริปต์ที่ 2 (Pastefy xG5IUFEl)",
+        Callback = function() LoadExternalScript(Script2_Url, "Script 2") end
+    })
+elseif ExtraTab.AddButton then
+    ExtraTab:AddButton("รันสคริปต์ที่ 1 (Pastefy AkB799ih)", function() LoadExternalScript(Script1_Url, "Script 1") end)
+    ExtraTab:AddButton("รันสคริปต์ที่ 2 (Pastefy xG5IUFEl)", function() LoadExternalScript(Script2_Url, "Script 2") end)
+end
+
+-- บังคับเปลี่ยนชื่อกวาดล้างรอบสุดท้าย
+task.delay(0.5, UpdateGUIText)
