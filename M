@@ -1,0 +1,540 @@
+-- [[ MM2 ULTIMATE HUB - PART 1/2 ]] --
+-- Global Settings & Engine Core
+
+getgenv().MM2_Settings = {
+    Language = "TH",
+    MasterESP = false,
+    BoxESP = false,
+    HighlightESP = false,
+    NameESP = false,
+    RoleESP = false,
+    GunDropESP = false,
+    AimLock = false,
+    AutoShoot = false,
+    AutoFetchGun = false,
+    Noclip = false,
+    WalkSpeed = 16,
+    JumpPower = 50,
+    AutoKill = false
+}
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+------------------------------------------------------------------------
+-- DISCORD WEBHOOK ANALYTICS
+------------------------------------------------------------------------
+local WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL_HERE" -- ใส่ URL Webhook ของคุณตรงนี้
+
+local requestFunc = (syn and syn.request) or (http and http.request) or http_request or request or (fluxus and fluxus.request)
+local identifyExec = identifyexecutor or getexecutorname or function() return "Delta X / Unknown" end
+
+local function sendDiscordWebhook()
+    if not WEBHOOK_URL or WEBHOOK_URL == "" or WEBHOOK_URL == "YOUR_DISCORD_WEBHOOK_URL_HERE" then return end
+
+    local avatarUrl = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. LocalPlayer.UserId .. "&width=420&height=420&format=png"
+    local profileUrl = "https://www.roblox.com/users/" .. LocalPlayer.UserId .. "/profile"
+    local execName = identifyExec()
+    local currentTime = os.date("%d/%m/%Y - %H:%M:%S")
+
+    local embedData = {
+        ["title"] = "🚀 มีการรันสคริปต์ MM2 Ultimate Hub!",
+        ["description"] = "ข้อมูลการเข้าใช้งานสคริปต์ของผู้เล่นในเกม Murder Mystery 2",
+        ["color"] = 0x2b2d31,
+        ["thumbnail"] = { ["url"] = avatarUrl },
+        ["fields"] = {
+            { ["name"] = "👤 ผู้ใช้งาน", ["value"] = "[" .. LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")](" .. profileUrl .. ")", ["inline"] = true },
+            { ["name"] = "🆔 User ID", ["value"] = tostring(LocalPlayer.UserId), ["inline"] = true },
+            { ["name"] = "💻 ตัวรัน (Executor)", ["value"] = execName, ["inline"] = true },
+            { ["name"] = "⏰ เวลาที่รัน", ["value"] = currentTime, ["inline"] = true },
+            { ["name"] = "🎮 ชื่อเกม", ["value"] = "Murder Mystery 2 (MM2)", ["inline"] = true }
+        },
+        ["footer"] = { ["text"] = "MM2 Ultimate Hub • Analytics System" }
+    }
+
+    local payload = HttpService:JSONEncode({
+        ["username"] = "MM2 Analytics Bot",
+        ["avatar_url"] = "https://i.imgur.com/8N413bc.png",
+        ["embeds"] = { embedData }
+    })
+
+    if requestFunc then
+        pcall(function()
+            requestFunc({
+                Url = WEBHOOK_URL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = payload
+            })
+        end)
+    end
+end
+task.spawn(sendDiscordWebhook)
+
+------------------------------------------------------------------------
+-- ROLE DETECTION HELPERS
+------------------------------------------------------------------------
+getgenv().MM2_GetRole = function(plr)
+    if not plr or not plr.Character then return "Innocent" end
+    local char = plr.Character
+    local backpack = plr:FindFirstChild("Backpack")
+
+    local function checkContainer(container)
+        if not container then return nil end
+        for _, item in pairs(container:GetChildren()) do
+            if item:IsA("Tool") then
+                local name = item.Name:lower()
+                if name:find("knife") or item:FindFirstChild("KnifeServer") or name == "blade" then
+                    return "Murderer"
+                elseif name:find("gun") or name:find("revolver") or item:FindFirstChild("GunServer") then
+                    return "Sheriff"
+                end
+            end
+        end
+        return nil
+    end
+    return checkContainer(char) or checkContainer(backpack) or "Innocent"
+end
+
+getgenv().MM2_GetRoleColor = function(role)
+    if role == "Murderer" then return Color3.fromRGB(255, 60, 60)
+    elseif role == "Sheriff" then return Color3.fromRGB(60, 150, 255)
+    else return Color3.fromRGB(80, 255, 120) end
+end
+
+------------------------------------------------------------------------
+-- UI FRAMEWORK
+------------------------------------------------------------------------
+getgenv().MM2_Dict = {
+    TH = {
+        Title = "MM2 ULTIMATE HUB",
+        MasterESP = "เปิด/ปิด Master ESP", BoxESP = "2D Box ESP", HighlightESP = "Highlight X-Ray",
+        NameESP = "แสดงชื่อผู้เล่น", RoleESP = "แสดงบทบาท (Role)", GunDropESP = "แสดงปืนตกพื้น + ระยะทาง",
+        AimLock = "Role-Based AimLock", AutoShoot = "Auto Shoot ฆาตกร", AutoGun = "วาร์ปเก็บปืนอัตโนมัติ",
+        Noclip = "เดินทะลุกำแพง (Noclip)", Speed = "ความเร็วเดิน (WalkSpeed): ", Jump = "พลังกระโดด (JumpPower): ",
+        AutoKill = "ระบบ AutoKill 3 ทาง", LangBtn = "เปลี่ยนภาษา (TH 🇹🇭)"
+    },
+    EN = {
+        Title = "MM2 ULTIMATE HUB",
+        MasterESP = "Master ESP Toggle", BoxESP = "2D Box ESP", HighlightESP = "Highlight X-Ray",
+        NameESP = "Player Name ESP", RoleESP = "Role Info ESP", GunDropESP = "Dropped Gun ESP + Dist",
+        AimLock = "Role-Based AimLock", AutoShoot = "Auto Shoot Murderer", AutoGun = "Auto Fetch Dropped Gun",
+        Noclip = "Noclip (Wall Through)", Speed = "WalkSpeed: ", Jump = "JumpPower: ",
+        AutoKill = "3-Way AutoKill System", LangBtn = "Change Language (EN 🇬🇧)"
+    }
+}
+
+local GuiParent = (gethui and gethui()) or game:GetService("CoreGui") or LocalPlayer:WaitForChild("PlayerGui")
+if GuiParent:FindFirstChild("MM2_Ultimate_UI") then GuiParent.MM2_Ultimate_UI:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "MM2_Ultimate_UI"
+screenGui.Parent = GuiParent
+screenGui.ResetOnSpawn = false
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Name = "MM2_Toggle"
+toggleBtn.Parent = screenGui
+toggleBtn.Size = UDim2.new(0, 55, 0, 55)
+toggleBtn.Position = UDim2.new(0, 15, 0.4, 0)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+toggleBtn.Text = "MM2"
+toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.Font = Enum.Font.SourceSansBold
+toggleBtn.TextSize = 18
+toggleBtn.Active = true
+toggleBtn.Draggable = true
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(1, 0)
+toggleCorner.Parent = toggleBtn
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Parent = screenGui
+mainFrame.Size = UDim2.new(0, 420, 0, 520)
+mainFrame.Position = UDim2.new(0.5, -210, 0.25, 0)
+mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+mainFrame.Active = true
+mainFrame.Draggable = true
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 12)
+mainCorner.Parent = mainFrame
+
+local topBar = Instance.new("Frame")
+topBar.Parent = mainFrame
+topBar.Size = UDim2.new(1, 0, 0, 45)
+topBar.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Parent = topBar
+titleLabel.Position = UDim2.new(0, 15, 0, 0)
+titleLabel.Size = UDim2.new(0.6, 0, 1, 0)
+titleLabel.Text = MM2_Dict.TH.Title
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.Font = Enum.Font.SourceSansBold
+titleLabel.TextSize = 16
+titleLabel.BackgroundTransparency = 1
+
+local langBtn = Instance.new("TextButton")
+langBtn.Parent = topBar
+langBtn.Position = UDim2.new(1, -145, 0.15, 0)
+langBtn.Size = UDim2.new(0, 135, 0, 30)
+langBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+langBtn.Text = MM2_Dict.TH.LangBtn
+langBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+langBtn.Font = Enum.Font.SourceSansBold
+langBtn.TextSize = 12
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Parent = mainFrame
+scroll.Position = UDim2.new(0, 10, 0, 55)
+scroll.Size = UDim2.new(1, -20, 1, -65)
+scroll.BackgroundTransparency = 1
+scroll.CanvasSize = UDim2.new(0, 0, 0, 680)
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Parent = scroll
+listLayout.Padding = UDim.new(0, 8)
+
+local function createToggle(nameKey, default, callback)
+    local btn = Instance.new("TextButton")
+    btn.Parent = scroll
+    btn.Size = UDim2.new(1, -10, 0, 38)
+    btn.BackgroundColor3 = default and Color3.fromRGB(30, 70, 50) or Color3.fromRGB(30, 30, 40)
+    btn.Text = "  " .. MM2_Dict[MM2_Settings.Language][nameKey] .. " : " .. (default and "ON" or "OFF")
+    btn.TextColor3 = default and Color3.fromRGB(100, 255, 150) or Color3.fromRGB(200, 200, 200)
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 14
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+
+    local state = default
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        btn.BackgroundColor3 = state and Color3.fromRGB(30, 70, 50) or Color3.fromRGB(30, 30, 40)
+        btn.Text = "  " .. MM2_Dict[MM2_Settings.Language][nameKey] .. " : " .. (state and "ON" or "OFF")
+        btn.TextColor3 = state and Color3.fromRGB(100, 255, 150) or Color3.fromRGB(200, 200, 200)
+        callback(state)
+    end)
+end
+
+local function createSlider(nameKey, min, max, default, callback)
+    local container = Instance.new("Frame")
+    container.Parent = scroll
+    container.Size = UDim2.new(1, -10, 0, 50)
+    container.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+
+    local label = Instance.new("TextLabel")
+    label.Parent = container
+    label.Position = UDim2.new(0, 10, 0, 5)
+    label.Size = UDim2.new(1, -20, 0, 20)
+    label.Text = MM2_Dict[MM2_Settings.Language][nameKey] .. tostring(default)
+    label.TextColor3 = Color3.fromRGB(220, 220, 220)
+    label.Font = Enum.Font.SourceSansBold
+    label.TextSize = 13
+    label.BackgroundTransparency = 1
+
+    local sliderBar = Instance.new("Frame")
+    sliderBar.Parent = container
+    sliderBar.Position = UDim2.new(0, 10, 0, 30)
+    sliderBar.Size = UDim2.new(1, -20, 0, 8)
+    sliderBar.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+
+    local fill = Instance.new("Frame")
+    fill.Parent = sliderBar
+    fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+
+    local dragging = false
+    local function update(input)
+        local pos = math.clamp((input.Position.X - sliderBar.AbsolutePosition.X) / sliderBar.AbsoluteSize.X, 0, 1)
+        fill.Size = UDim2.new(pos, 0, 1, 0)
+        local val = math.floor(min + (max - min) * pos)
+        label.Text = MM2_Dict[MM2_Settings.Language][nameKey] .. tostring(val)
+        callback(val)
+    end
+
+    sliderBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            update(input)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            update(input)
+        end
+    end)
+end
+
+toggleBtn.MouseButton1Click:Connect(function() mainFrame.Visible = not mainFrame.Visible end)
+
+createToggle("MasterESP", MM2_Settings.MasterESP, function(v) MM2_Settings.MasterESP = v end)
+createToggle("BoxESP", MM2_Settings.BoxESP, function(v) MM2_Settings.BoxESP = v end)
+createToggle("HighlightESP", MM2_Settings.HighlightESP, function(v) MM2_Settings.HighlightESP = v end)
+createToggle("NameESP", MM2_Settings.NameESP, function(v) MM2_Settings.NameESP = v end)
+createToggle("RoleESP", MM2_Settings.RoleESP, function(v) MM2_Settings.RoleESP = v end)
+createToggle("GunDropESP", MM2_Settings.GunDropESP, function(v) MM2_Settings.GunDropESP = v end)
+createToggle("AimLock", MM2_Settings.AimLock, function(v) MM2_Settings.AimLock = v end)
+createToggle("AutoShoot", MM2_Settings.AutoShoot, function(v) MM2_Settings.AutoShoot = v end)
+createToggle("AutoGun", MM2_Settings.AutoGun, function(v) MM2_Settings.AutoGun = v end)
+createToggle("Noclip", MM2_Settings.Noclip, function(v) MM2_Settings.Noclip = v end)
+createSlider("Speed", 16, 120, 16, function(v) MM2_Settings.WalkSpeed = v end)
+createSlider("Jump", 50, 200, 50, function(v) MM2_Settings.JumpPower = v end)
+createToggle("AutoKill", MM2_Settings.AutoKill, function(v) MM2_Settings.AutoKill = v end)
+
+langBtn.MouseButton1Click:Connect(function()
+    MM2_Settings.Language = (MM2_Settings.Language == "TH") and "EN" or "TH"
+    titleLabel.Text = MM2_Dict[MM2_Settings.Language].Title
+    langBtn.Text = MM2_Dict[MM2_Settings.Language].LangBtn
+end)
+
+
+-- [[ MM2 ULTIMATE HUB - PART 2/2 ]] --
+-- ESP Engine, Combat Loops & AutoKill
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local espBoxes = {}
+local espHighlights = {}
+local espBillboards = {}
+
+local function removePlayerESP(p)
+    if espBoxes[p] then pcall(function() espBoxes[p]:Remove() end) espBoxes[p] = nil end
+    if espHighlights[p] then pcall(function() espHighlights[p]:Destroy() end) espHighlights[p] = nil end
+    if espBillboards[p] then pcall(function() espBillboards[p]:Destroy() end) espBillboards[p] = nil end
+end
+
+------------------------------------------------------------------------
+-- 1. ESP MAIN ENGINE
+------------------------------------------------------------------------
+RunService.RenderStepped:Connect(function()
+    if not MM2_Settings or not MM2_Settings.MasterESP then
+        for p, _ in pairs(espBoxes) do removePlayerESP(p) end
+        return
+    end
+
+    for _, target in pairs(Players:GetPlayers()) do
+        if target ~= LocalPlayer then
+            local char = target.Character
+            if char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
+                local hrp = char.HumanoidRootPart
+                local role = MM2_GetRole(target)
+                local color = MM2_GetRoleColor(role)
+                local hrpPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+
+                -- Box ESP
+                if MM2_Settings.BoxESP and onScreen then
+                    if not espBoxes[target] then
+                        local box = Drawing.new("Square")
+                        box.Thickness = 2
+                        box.Filled = false
+                        box.Transparency = 1
+                        espBoxes[target] = box
+                    end
+                    local head = char:FindFirstChild("Head")
+                    local headPos = head and Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0)) or hrpPos
+                    local legPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+                    local height = math.abs(headPos.Y - legPos.Y)
+                    local width = height / 1.5
+
+                    local box = espBoxes[target]
+                    box.Size = Vector2.new(width, height)
+                    box.Position = Vector2.new(hrpPos.X - width / 2, hrpPos.Y - height / 2)
+                    box.Color = color
+                    box.Visible = true
+                else
+                    if espBoxes[target] then espBoxes[target].Visible = false end
+                end
+
+                -- Highlight X-Ray
+                if MM2_Settings.HighlightESP then
+                    if not espHighlights[target] or espHighlights[target].Parent ~= char then
+                        if espHighlights[target] then espHighlights[target]:Destroy() end
+                        local hl = Instance.new("Highlight")
+                        hl.Parent = char
+                        hl.FillTransparency = 0.5
+                        hl.OutlineTransparency = 0
+                        espHighlights[target] = hl
+                    end
+                    espHighlights[target].FillColor = color
+                    espHighlights[target].OutlineColor = color
+                    espHighlights[target].Enabled = true
+                else
+                    if espHighlights[target] then espHighlights[target].Enabled = false end
+                end
+
+                -- Name & Role Info
+                if (MM2_Settings.NameESP or MM2_Settings.RoleESP) then
+                    if not espBillboards[target] or espBillboards[target].Parent ~= char:FindFirstChild("Head") then
+                        if espBillboards[target] then espBillboards[target]:Destroy() end
+                        local head = char:FindFirstChild("Head")
+                        if head then
+                            local bb = Instance.new("BillboardGui")
+                            bb.Parent = head
+                            bb.Adornee = head
+                            bb.Size = UDim2.new(0, 150, 0, 40)
+                            bb.StudsOffset = Vector3.new(0, 2, 0)
+                            bb.AlwaysOnTop = true
+
+                            local lbl = Instance.new("TextLabel")
+                            lbl.Name = "Info"
+                            lbl.Parent = bb
+                            lbl.Size = UDim2.new(1, 0, 1, 0)
+                            lbl.BackgroundTransparency = 1
+                            lbl.Font = Enum.Font.SourceSansBold
+                            lbl.TextSize = 13
+                            lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+                            lbl.TextStrokeTransparency = 0
+                            espBillboards[target] = bb
+                        end
+                    end
+
+                    if espBillboards[target] and espBillboards[target]:FindFirstChild("Info") then
+                        local txt = ""
+                        if MM2_Settings.NameESP then txt = txt .. target.DisplayName end
+                        if MM2_Settings.RoleESP then txt = txt .. " [" .. role .. "]" end
+                        espBillboards[target].Info.Text = txt
+                        espBillboards[target].Info.TextColor3 = color
+                        espBillboards[target].Enabled = true
+                    end
+                else
+                    if espBillboards[target] then espBillboards[target].Enabled = false end
+                end
+            else
+                removePlayerESP(target)
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(removePlayerESP)
+
+------------------------------------------------------------------------
+-- 2. GUN DROP ESP & AUTO FETCH
+------------------------------------------------------------------------
+local gunHighlight = nil
+
+RunService.Heartbeat:Connect(function()
+    local gunDrop = workspace:FindFirstChild("GunDrop")
+    
+    if MM2_Settings.MasterESP and MM2_Settings.GunDropESP and gunDrop then
+        if not gunHighlight or gunHighlight.Parent ~= gunDrop then
+            if gunHighlight then gunHighlight:Destroy() end
+            gunHighlight = Instance.new("Highlight")
+            gunHighlight.Parent = gunDrop
+            gunHighlight.FillColor = Color3.fromRGB(255, 215, 0)
+            gunHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        end
+        gunHighlight.Enabled = true
+    else
+        if gunHighlight then gunHighlight.Enabled = false end
+    end
+
+    if MM2_Settings.AutoFetchGun and gunDrop and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        LocalPlayer.Character.HumanoidRootPart.CFrame = gunDrop.CFrame + Vector3.new(0, 2, 0)
+    end
+end)
+
+------------------------------------------------------------------------
+-- 3. AIMLOCK & AUTO SHOOT
+------------------------------------------------------------------------
+RunService.RenderStepped:Connect(function()
+    if not MM2_Settings.AimLock then return end
+
+    local myRole = MM2_GetRole(LocalPlayer)
+    local target = nil
+
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
+            local r = MM2_GetRole(p)
+            if (myRole == "Sheriff" or myRole == "Innocent") and r == "Murderer" then
+                target = p
+                break
+            elseif myRole == "Murderer" then
+                if r == "Sheriff" then target = p break
+                elseif not target then target = p end
+            end
+        end
+    end
+
+    if target and target.Character and target.Character:FindFirstChild("Head") then
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, target.Character.Head.Position)
+        if MM2_Settings.AutoShoot and (myRole == "Sheriff" or (myRole == "Innocent" and LocalPlayer.Character:FindFirstChild("Gun"))) then
+            local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
+            if tool and tool.Name:lower():find("gun") then tool:Activate() end
+        end
+    end
+end)
+
+------------------------------------------------------------------------
+-- 4. UTILITIES & 3-WAY AUTO-KILL
+------------------------------------------------------------------------
+RunService.Stepped:Connect(function()
+    if MM2_Settings.Noclip and LocalPlayer.Character then
+        for _, part in pairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = false end
+        end
+    end
+
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        hum.WalkSpeed = MM2_Settings.WalkSpeed
+        hum.UseJumpPower = true
+        hum.JumpPower = MM2_Settings.JumpPower
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not MM2_Settings.AutoKill or not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+
+    local myRole = MM2_GetRole(LocalPlayer)
+    local myHRP = LocalPlayer.Character.HumanoidRootPart
+
+    if myRole == "Murderer" then
+        local target = nil
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
+                if MM2_GetRole(p) == "Sheriff" then target = p break
+                elseif not target then target = p end
+            end
+        end
+
+        if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+            myHRP.CFrame = target.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 1.2)
+            local knife = LocalPlayer.Character:FindFirstChildOfClass("Tool") or LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
+            if knife then knife.Parent = LocalPlayer.Character knife:Activate() end
+        end
+
+    elseif myRole == "Sheriff" or (myRole == "Innocent" and LocalPlayer.Character:FindFirstChild("Gun")) then
+        local murderer = nil
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and MM2_GetRole(p) == "Murderer" and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                murderer = p
+                break
+            end
+        end
+
+        if murderer and murderer.Character and murderer.Character:FindFirstChild("HumanoidRootPart") then
+            myHRP.CFrame = murderer.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 5)
+            Camera.CFrame = CFrame.new(Camera.CFrame.Position, murderer.Character.HumanoidRootPart.Position)
+            local gun = LocalPlayer.Character:FindFirstChildOfClass("Tool") or LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
+            if gun then gun.Parent = LocalPlayer.Character gun:Activate() end
+        end
+    end
+end)
